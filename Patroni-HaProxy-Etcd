@@ -1,0 +1,298 @@
+HOSTNAME		        IP ADDRESS		PURPOSE
+postgresql1			   192.168.53.225 		Postgresql+Patroni
+postgresql2			   192.168.53.224       Postgresql+Patroni
+
+etcd_node1			   192.168.53.221		etcd
+haproxy_node1		   192.168.53.222 	    HAProxy
+
+ssh-keygen -t rsa -f /root/.ssh/id_rsa -q -P ""
+ssh-copy-id root@192.168.53.225
+ssh root@192.168.53.224 
+
+Install Patroni
+https://github.com/cybertec-postgresql/patroni-packaging/releases 
+sudo yum -y install https://github.com/cybertec-postgresql/patroni-packaging/releases/download/1.6.5-1/patroni-1.6.5-1.rhel7.x86_64.rpm
+sudo cp -p /opt/app/patroni/etc/postgresql.yml.sample /opt/app/patroni/etc/postgresql.yml
+sudo vi /opt/app/patroni/etc/postgresql.yml
+
+scope: postgres
+namespace: /pg_cluster/
+name: postgresql1
+
+restapi:
+  listen: 192.168.53.224:8008
+  connect_address: 192.168.53.224:8008
+#  certfile: /etc/ssl/certs/ssl-cert-snakeoil.pem
+#  keyfile: /etc/ssl/private/ssl-cert-snakeoil.key
+#  authentication:
+#    username: username
+#    password: password
+
+etcd:
+  host: 192.168.53.221:2379
+
+bootstrap:
+  # this section will be written into Etcd:/<namespace>/<scope>/config after initializing new cluster
+  # and all other cluster members will use it as a `global configuration`
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 10
+    maximum_lag_on_failover: 1048576
+#    master_start_timeout: 300
+#    synchronous_mode: false
+    postgresql:
+      use_pg_rewind: true
+      use_slots: true
+      parameters:
+#        wal_level: hot_standby
+#        hot_standby: "on"
+#        wal_keep_segments: 8
+#        max_wal_senders: 5
+#        max_replication_slots: 5
+#        wal_log_hints: "on"
+#        archive_mode: "on"
+#        archive_timeout: 1800s
+#        archive_command: mkdir -p ../wal_archive && test ! -f ../wal_archive/%f && cp %p ../wal_archive/%f
+#      recovery_conf:
+#        restore_command: cp ../wal_archive/%f %p
+
+  # some desired options for 'initdb'
+  initdb:  # Note: It needs to be a list (some options need values, others are switches)
+  - encoding: UTF8
+  - data-checksums
+
+  pg_hba:  # Add following lines to pg_hba.conf after running 'initdb'
+  - host replication replica 127.0.0.1/32 md5
+  - host replication replica 192.168.53.224/0 md5
+  - host replication replica 192.168.53.225/0 md5
+  - host all all 0.0.0.0/0 md5
+#  - hostssl all all 0.0.0.0/0 md5
+
+  # Additional script to be launched after initial cluster creation (will be passed the connection URL as parameter)
+# post_init: /usr/local/bin/setup_cluster.sh
+
+  # Some additional users users which needs to be created after initializing new cluster
+  users:
+    admin:
+      password: admin
+      options:
+        - createrole
+        - createdb
+
+postgresql:
+  listen: 192.168.53.224:5432
+  connect_address: 192.168.53.224:5432
+  data_dir: /var/lib/pgsql/11/data
+  bin_dir: /usr/pgsql-11/bin
+  pgpass: /tmp/pgpass0
+  authentication:
+    replication:
+      username: replica
+      password: '123456'
+    superuser:
+      username: postgres
+      password: '123456'
+
+#watchdog:
+#  mode: automatic # Allowed values: off, automatic, required
+#  device: /dev/watchdog
+#  safety_margin: 5
+
+tags:
+    nofailover: false
+    noloadbalance: false
+    clonefrom: false
+    nosync: false 
+
+sudo systemctl enable patroni
+sudo systemctl start patroni
+sudo systemctl status patroni
+
+Install etcd
+sudo yum -y install etcd
+sudo vi /etc/etcd/etcd.conf
+[Member]
+ETCD_LISTEN_PEER_URLS="http://192.168.53.221:2380,http://localhost:2380"
+ETCD_LISTEN_CLIENT_URLS="http://192.168.53.221:2379,http://localhost:2379"
+
+[Clustering]
+ETCD_INITIAL_ADVERTISE_PEER_URLS="http://192.168.53.221:2380"
+ETCD_ADVERTISE_CLIENT_URLS="http://192.168.53.221:2379"
+ETCD_INITIAL_CLUSTER="default=http://192.168.53.221:2380"
+ETCD_INITIAL_CLUSTER_TOKEN="etcd-cluster"
+ETCD_INITIAL_CLUSTER_STATE="new"
+ 
+sudo systemctl enable etcd
+sudo systemctl start etcd
+sudo systemctl status etcd
+[root@nazelin-test-01 ~]# sudo systemctl status etcd
+â etcd.service - Etcd Server
+   Loaded: loaded (/usr/lib/systemd/system/etcd.service; enabled; vendor preset: disabled)
+   Active: active (running) since Thu 2021-04-08 09:29:47 +03; 5h 1min ago
+ Main PID: 9009 (etcd)
+   CGroup: /system.slice/etcd.service
+           ââ9009 /usr/bin/etcd --name=default --data-dir=/var/lib/etcd/default.etcd --listen-client-urls=http://192.168.53.221:2379,http://localhost:2379
+
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: raft.node: 6af8c56150764bef elected leader 6af8c56150764bef at term 2
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: published {Name:default ClientURLs:[http://192.168.53.221:2379]} to cluster 3ce7502dc8b0f6a0
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: ready to serve client requests
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: serving insecure client requests on 192.168.53.221:2379, this is strongly discouraged!
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: setting up the initial cluster version to 3.3
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: ready to serve client requests
+Apr 08 09:29:47 nazelin-test-01 systemd[1]: Started Etcd Server.
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: serving insecure client requests on 127.0.0.1:2379, this is strongly discouraged!
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: set the initial cluster version to 3.3
+Apr 08 09:29:47 nazelin-test-01 etcd[9009]: enabled capabilities for version 3.3 
+
+
+
+Install HAProxy
+http://192.168.53.222:7000/
+sudo yum -y install haproxy
+sudo cp -p /etc/haproxy/haproxy.cfg /etc/haproxy/haproxy.cfg.bkp
+sudo vi /etc/haproxy/haproxy.cfg
+global
+    log         127.0.0.1 local2
+
+    chroot      /var/lib/haproxy
+    pidfile     /var/run/haproxy.pid
+    user        haproxy
+    group       haproxy
+    daemon
+
+    stats socket /var/lib/haproxy/stats
+
+defaults
+    mode                    tcp
+    log                     global
+    retries                 3
+    timeout queue           1m
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+    timeout check           10s
+    maxconn                 3000
+
+listen stats
+    mode http
+    bind *:7000
+    stats enable
+    stats uri /
+
+listen postgres
+    bind *:5000
+    option httpchk
+    http-check expect status 200
+    default-server inter 3s fall 3 rise 2 on-marked-down shutdown-sessions
+    server pg_node1 192.168.53.224:5432 maxconn 1000 check port 8008
+    server pg_node2 192.168.53.225:5432 maxconn 1000 check port 8008
+
+sudo systemctl start haproxy
+sudo systemctl enable haproxy
+sudo systemctl status haproxy
+sudo haproxy -c -V -f /etc/haproxy/haproxy.cfg
+psql -h 192.168.53.222  -p 5000 -U postgres
+sudo systemctl stop patroni
+sudo patronictl --help
+sudo patronictl -c /opt/app/patroni/etc/postgresql.yml history
+[root@nazelin-test-04 log]# sudo patronictl -c /opt/app/patroni/etc/postgresql.yml history
++----+-------------+------------------------------+---------------------------+
+| TL |         LSN |            Reason            |         Timestamp         |
++----+-------------+------------------------------+---------------------------+
+|  1 |   167772312 | no recovery target specified |                           |
+|  2 | 42261807256 | no recovery target specified |                           |
+|  3 | 42278584472 | no recovery target specified |                           |
+|  4 | 42295361688 | no recovery target specified |                           |
+|  5 | 42312138904 | no recovery target specified |                           |
+|  6 | 42345693336 | no recovery target specified |                           |
+|  7 | 42396024984 | no recovery target specified |                           |
+|  8 | 42530242712 | no recovery target specified | 2021-04-08T10:06:37+03:00 |
+|  9 | 42547019928 | no recovery target specified | 2021-04-08T10:23:24+03:00 |
+| 10 | 42597351576 | no recovery target specified | 2021-04-08T11:52:47+03:00 |
+| 11 | 42614128792 | no recovery target specified | 2021-04-08T12:42:30+03:00 |
+| 12 | 42630906008 | no recovery target specified | 2021-04-08T12:52:41+03:00 |
++----+-------------+------------------------------+---------------------------+  
+sudo patronictl -c /opt/app/patroni/etc/postgresql.yml failover
+[root@nazelin-test-04 log]# patronictl -c /opt/app/patroni/etc/postgresql.yml failover
+Candidate ['postgresql1'] []: postgresql1
+Current cluster topology
++ Cluster: batman (6834479463887288430) +---------+----+-----------+
+|    Member   |      Host      |  Role  |  State  | TL | Lag in MB |
++-------------+----------------+--------+---------+----+-----------+
+| postgresql1 | 192.168.53.224 |        | running | 11 |         0 |
+| postgresql2 | 192.168.53.225 | Leader | running | 11 |           |
++-------------+----------------+--------+---------+----+-----------+
+Are you sure you want to failover cluster batman, demoting current master postgresql2? [y/N]: y
+2021-04-08 12:42:30.62033 Successfully failed over to "postgresql1"
++ Cluster: batman (6834479463887288430) +---------+----+-----------+
+|    Member   |      Host      |  Role  |  State  | TL | Lag in MB |
++-------------+----------------+--------+---------+----+-----------+
+| postgresql1 | 192.168.53.224 | Leader | running | 11 |           |
+| postgresql2 | 192.168.53.225 |        | stopped |    |   unknown |
++-------------+----------------+--------+---------+----+-----------+
+sudo patronictl -c /opt/app/patroni/etc/postgresql.yml list
+[root@nazelin-test-04 log]# sudo patronictl -c /opt/app/patroni/etc/postgresql.yml list
++ Cluster: batman (6834479463887288430) +---------+----+-----------+
+|    Member   |      Host      |  Role  |  State  | TL | Lag in MB |
++-------------+----------------+--------+---------+----+-----------+
+| postgresql1 | 192.168.53.224 | Leader | running | 13 |           |
+| postgresql2 | 192.168.53.225 |        | running | 13 |         0 |
++-------------+----------------+--------+---------+----+-----------+       
+sudo patronictl -c /opt/app/patroni/etc/postgresql.yml pause
+systemctl status patroni.service
+[root@nazelin-test-04 log]# systemctl status pat
+paths.target              patroni.service           patroni-watchdog.service
+[root@nazelin-test-04 log]# systemctl status pat
+paths.target              patroni.service           patroni-watchdog.service
+[root@nazelin-test-04 log]# systemctl status patroni.service
+â patroni.service - PostgreSQL high-availability manager
+   Loaded: loaded (/usr/lib/systemd/system/patroni.service; enabled; vendor preset: disabled)
+   Active: active (running) since Thu 2021-04-08 11:55:08 +03; 2h 23min ago
+ Main PID: 1546 (python3.6)
+   CGroup: /system.slice/patroni.service
+           ââ1546 python3.6 /opt/app/patroni/bin/patroni /opt/app/patroni/etc/postgresql.yml
+
+Apr 08 14:18:02 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:02,430 INFO: Lock owner: postgresql1; I am postgresql1
+Apr 08 14:18:02 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:02,438 INFO: no action.  i am the leader with the lock
+Apr 08 14:18:12 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:12,430 INFO: Lock owner: postgresql1; I am postgresql1
+Apr 08 14:18:12 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:12,434 INFO: no action.  i am the leader with the lock
+Apr 08 14:18:22 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:22,429 INFO: Lock owner: postgresql1; I am postgresql1
+Apr 08 14:18:22 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:22,433 INFO: no action.  i am the leader with the lock
+Apr 08 14:18:32 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:32,431 INFO: Lock owner: postgresql1; I am postgresql1
+Apr 08 14:18:32 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:32,434 INFO: no action.  i am the leader with the lock
+Apr 08 14:18:42 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:42,430 INFO: Lock owner: postgresql1; I am postgresql1
+Apr 08 14:18:42 nazelin-test-04 patroni[1546]: 2021-04-08 14:18:42,436 INFO: no action.  i am the leader with the lock
+
+--2 secondary node
+systemctl status patroni.service
+[root@nazelin-test-05 ~]# systemctl status patroni.service
+â patroni.service - PostgreSQL high-availability manager
+   Loaded: loaded (/usr/lib/systemd/system/patroni.service; enabled; vendor preset: disabled)
+   Active: active (running) since Thu 2021-04-08 10:48:08 +03; 3h 31min ago
+ Main PID: 27510 (python3.6)
+   CGroup: /system.slice/patroni.service
+           ââ12409 postgres: batman: walreceiver   streaming 9/EE0001B0
+           ââ25726 /usr/pgsql-11/bin/postgres -D /var/lib/pgsql/11/data --config-file=/var/lib/pgsql/11/data/postgresql.conf --listen_addresses=192.168.53.225 --port=543...
+           ââ25728 postgres: batman: logger
+           ââ25729 postgres: batman: startup   recovering 0000000D00000009000000EE
+           ââ25732 postgres: batman: checkpointer
+           ââ25733 postgres: batman: background writer
+           ââ25734 postgres: batman: stats collector
+           ââ25830 postgres: batman: postgres postgres 192.168.53.225(51514) idle
+           ââ27510 python3.6 /opt/app/patroni/bin/patroni /opt/app/patroni/etc/postgresql.yml
+
+Apr 08 14:18:52 nazelin-test-05 patroni[27510]: 2021-04-08 14:18:52,434 INFO: no action.  i am a secondary and i am following a leader
+Apr 08 14:19:02 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:02,431 INFO: Lock owner: postgresql1; I am postgresql2
+Apr 08 14:19:02 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:02,431 INFO: does not have lock
+Apr 08 14:19:02 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:02,435 INFO: no action.  i am a secondary and i am following a leader
+Apr 08 14:19:12 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:12,431 INFO: Lock owner: postgresql1; I am postgresql2
+Apr 08 14:19:12 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:12,432 INFO: does not have lock
+Apr 08 14:19:12 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:12,434 INFO: no action.  i am a secondary and i am following a leader
+Apr 08 14:19:22 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:22,431 INFO: Lock owner: postgresql1; I am postgresql2
+Apr 08 14:19:22 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:22,431 INFO: does not have lock
+Apr 08 14:19:22 nazelin-test-05 patroni[27510]: 2021-04-08 14:19:22,433 INFO: no action.  i am a secondary and i am following a leader 
+
+
+
+
